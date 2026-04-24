@@ -25,3 +25,5 @@ The default runtime parameters are in `config/um982.yaml`.
 This ROS 2 C++ package is an independent reimplementation of UM982 GNSS protocol handling.
 It does not contain source code from the original Python driver.
 Protocol parsing was implemented from public UM982 / NMEA / Unicore documentation.
+
+Support for additional Unicore sentences such as `KSXT` is intended to be added as a protocol-driven extension, not by porting legacy driver code.
