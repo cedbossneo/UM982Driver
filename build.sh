@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # Build script for multi-architecture Docker images.
-# Usage: ./build_docker_multiarch.sh [tag] [platforms]
-# Example: ./build_docker_multiarch.sh mowgli_unicore_gnss:kilted linux/amd64,linux/arm64
+# Usage: ./build.sh [tag] [platforms]
+# Example: ./build.sh ghcr.io/mowglifrenchtouch/um982driver:kilted linux/amd64,linux/arm64
 
-TAG="${1:-mowgli_unicore_gnss:kilted}"
+TAG="${1:-ghcr.io/mowglifrenchtouch/um982driver:mowgli}"
 PLATFORMS="${2:-linux/amd64,linux/arm64}"
 BUILDER="mowgli-builder"
 

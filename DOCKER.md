@@ -10,13 +10,21 @@ docker build -t mowgli_unicore_gnss:latest .
 
 ### Multi-architecture build
 
-Build both amd64 and arm64 images using Docker Buildx:
+Build both amd64 and arm64 images and push to GitHub Container Registry:
 
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t mowgli_unicore_gnss:kilted \
+  -t ghcr.io/mowglifrenchtouch/um982driver:kilted \
   --push .
 ```
+
+You must be logged in to GHCR first:
+
+```bash
+echo "$GHCR_PAT" | docker login ghcr.io -u mowglifrenchtouch --password-stdin
+```
+
+For convenience, use `./build.sh`.
 
 If you want local images for each architecture separately:
 
