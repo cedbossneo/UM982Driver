@@ -20,6 +20,8 @@ ros2 launch mowgli_unicore_gnss um982_launch.py
 
 The default runtime parameters are in `config/um982.yaml`.
 
-## Legacy code
+## Independent ROS 2 implementation
 
-Old C and Python legacy code has been moved to the `legacy/` directory.
+This ROS 2 C++ package is an independent reimplementation of UM982 GNSS protocol handling.
+It does not contain source code from the original Python driver.
+Protocol parsing was implemented from public UM982 / NMEA / Unicore documentation.

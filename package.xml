@@ -5,10 +5,9 @@
   <version>0.1.0</version>
   <description>ROS 2 C++ driver for Unicore UM982 GNSS receivers using NMEA and Unicore extended output.</description>
   <maintainer email="cedric@mowgli.dev">Cedric</maintainer>
-  <license>GPL-3.0</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>compass_msgs</depend>

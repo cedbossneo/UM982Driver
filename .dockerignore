@@ -8,7 +8,6 @@ log
 *.swo
 *~
 .DS_Store
-legacy
 .idea
 __pycache__
 *.pyc
