@@ -18,7 +18,7 @@
 #include <string>
 #include <unordered_map>
 
-#include <compass_msgs/msg/azimuth.hpp>
+#include <compass_interfaces/msg/azimuth.hpp>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <diagnostic_msgs/msg/key_value.hpp>
@@ -107,7 +107,7 @@ public:
     serial_.configure(port_, baudrate_);
 
     fix_pub_ = create_publisher<sensor_msgs::msg::NavSatFix>(fix_topic_, rclcpp::QoS(10));
-    heading_pub_ = create_publisher<compass_msgs::msg::Azimuth>(heading_topic_, rclcpp::QoS(10));
+    heading_pub_ = create_publisher<compass_interfaces::msg::Azimuth>(heading_topic_, rclcpp::QoS(10));
     diagnostics_pub_ =
       create_publisher<diagnostic_msgs::msg::DiagnosticArray>(diagnostics_topic_, rclcpp::QoS(10));
 
@@ -358,14 +358,14 @@ private:
       return;
     }
 
-    compass_msgs::msg::Azimuth msg;
+    compass_interfaces::msg::Azimuth msg;
     msg.header.stamp = now();
     msg.header.frame_id = frame_id_;
     msg.azimuth = heading->heading_deg;
     msg.variance = heading->variance_deg2;
-    msg.unit = compass_msgs::msg::Azimuth::UNIT_DEG;
-    msg.orientation = compass_msgs::msg::Azimuth::ORIENTATION_NED;
-    msg.reference = compass_msgs::msg::Azimuth::REFERENCE_GEOGRAPHIC;
+    msg.unit = compass_interfaces::msg::Azimuth::UNIT_DEG;
+    msg.orientation = compass_interfaces::msg::Azimuth::ORIENTATION_NED;
+    msg.reference = compass_interfaces::msg::Azimuth::REFERENCE_GEOGRAPHIC;
     heading_pub_->publish(msg);
   }
 
@@ -465,7 +465,7 @@ private:
   std::unordered_map<std::string, std::size_t> sentence_counts_;
 
   rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr fix_pub_;
-  rclcpp::Publisher<compass_msgs::msg::Azimuth>::SharedPtr heading_pub_;
+  rclcpp::Publisher<compass_interfaces::msg::Azimuth>::SharedPtr heading_pub_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
   rclcpp::TimerBase::SharedPtr poll_timer_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;

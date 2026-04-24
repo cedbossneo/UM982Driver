@@ -54,7 +54,7 @@ services:
 ## Output Topics
 
 - `/gnss/fix` — `sensor_msgs/NavSatFix`
-- `/gnss/azimuth` — `compass_msgs/Azimuth`
+- `/gnss/azimuth` — `compass_interfaces/Azimuth`
 - `/gnss/diagnostics` — `diagnostic_msgs/DiagnosticArray`
 
 ## Serial Port Configuration

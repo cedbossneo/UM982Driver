@@ -12,7 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(compass_msgs REQUIRED)
+find_package(compass_interfaces REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 
 add_library(${PROJECT_NAME}_core STATIC
@@ -30,14 +30,14 @@ add_executable(um982_node
   src/um982_node.cpp
 )
 
-target_link_libraries(um982_node PUBLIC
+target_link_libraries(um982_node
   ${PROJECT_NAME}_core
 )
 
 ament_target_dependencies(um982_node
   rclcpp
   sensor_msgs
-  compass_msgs
+  compass_interfaces
   diagnostic_msgs
 )
 

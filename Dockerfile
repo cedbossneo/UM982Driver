@@ -11,7 +11,7 @@
 # =============================================================================
 
 # ─── Builder ────────────────────────────────────────────────────────────────
-FROM ros:iron-ros-base AS builder
+FROM ros:kilted-ros-base AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -24,16 +24,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       cmake \
       git \
       python3-colcon-common-extensions \
-      ros-iron-rclcpp \
-      ros-iron-sensor-msgs \
-      ros-iron-diagnostic-msgs \
-      ros-iron-compass-msgs
+      ros-kilted-rclcpp \
+      ros-kilted-sensor-msgs \
+      ros-kilted-diagnostic-msgs \
+      ros-kilted-compass-interfaces
 
 WORKDIR /ws/src
 COPY . mowgli_unicore_gnss
 
 WORKDIR /ws
-RUN . /opt/ros/iron/setup.sh \
+RUN . /opt/ros/kilted/setup.sh \
  && colcon build --merge-install \
       --packages-select mowgli_unicore_gnss \
       --cmake-args -DCMAKE_BUILD_TYPE=Release \
@@ -41,7 +41,7 @@ RUN . /opt/ros/iron/setup.sh \
  && rm -rf /ws/build /ws/log /ws/src
 
 # ─── Runtime ────────────────────────────────────────────────────────────────
-FROM ros:iron-ros-base
+FROM ros:kilted-ros-base
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -50,8 +50,8 @@ RUN sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/u
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-      ros-iron-rmw-cyclonedds-cpp \
-      ros-iron-compass-msgs
+      ros-kilted-rmw-cyclonedds-cpp \
+      ros-kilted-compass-interfaces
 
 COPY --from=builder /ws/install /opt/mowgli_unicore_gnss
 
