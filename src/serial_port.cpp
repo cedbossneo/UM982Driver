@@ -8,6 +8,7 @@
 #include <utility>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -15,7 +16,7 @@ namespace mowgli_unicore_gnss
 {
 
 SerialPort::SerialPort(std::string device, int baudrate)
-: device_(std::move(device)), baudrate_(baudrate)
+    : device_(std::move(device)), baudrate_(baudrate)
 {
 }
 
@@ -25,7 +26,7 @@ SerialPort::~SerialPort()
 }
 
 SerialPort::SerialPort(SerialPort&& other) noexcept
-: device_(std::move(other.device_)), baudrate_(other.baudrate_), fd_(other.fd_)
+    : device_(std::move(other.device_)), baudrate_(other.baudrate_), fd_(other.fd_)
 {
   other.fd_ = -1;
 }
@@ -57,15 +58,13 @@ bool SerialPort::open()
     return true;
   }
 
-  fd_ = ::open(device_.c_str(), O_RDONLY | O_NOCTTY | O_NONBLOCK);
+  fd_ = ::open(device_.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
   if (fd_ < 0)
   {
     return false;
   }
 
-  struct termios tty
-  {
-  };
+  struct termios tty{};
 
   if (::tcgetattr(fd_, &tty) != 0)
   {
@@ -74,14 +73,15 @@ bool SerialPort::open()
     return false;
   }
 
-  tty.c_iflag &= ~(static_cast<tcflag_t>(IXON) | static_cast<tcflag_t>(IXOFF) | static_cast<tcflag_t>(IXANY) |
-                   static_cast<tcflag_t>(ICRNL) | static_cast<tcflag_t>(INLCR) | static_cast<tcflag_t>(IGNCR) |
-                   static_cast<tcflag_t>(ISTRIP) | static_cast<tcflag_t>(INPCK) | static_cast<tcflag_t>(IGNBRK));
+  tty.c_iflag &= ~(
+      static_cast<tcflag_t>(IXON) | static_cast<tcflag_t>(IXOFF) | static_cast<tcflag_t>(IXANY) |
+      static_cast<tcflag_t>(ICRNL) | static_cast<tcflag_t>(INLCR) | static_cast<tcflag_t>(IGNCR) |
+      static_cast<tcflag_t>(ISTRIP) | static_cast<tcflag_t>(INPCK) | static_cast<tcflag_t>(IGNBRK));
   tty.c_oflag = 0;
   tty.c_cflag &= ~(static_cast<tcflag_t>(PARENB) | static_cast<tcflag_t>(CSTOPB) |
                    static_cast<tcflag_t>(CSIZE) | static_cast<tcflag_t>(CRTSCTS));
   tty.c_cflag |=
-    static_cast<tcflag_t>(CS8) | static_cast<tcflag_t>(CREAD) | static_cast<tcflag_t>(CLOCAL);
+      static_cast<tcflag_t>(CS8) | static_cast<tcflag_t>(CREAD) | static_cast<tcflag_t>(CLOCAL);
   tty.c_lflag &= ~(static_cast<tcflag_t>(ECHO) | static_cast<tcflag_t>(ECHOE) |
                    static_cast<tcflag_t>(ECHONL) | static_cast<tcflag_t>(ICANON) |
                    static_cast<tcflag_t>(ISIG) | static_cast<tcflag_t>(IEXTEN));
@@ -143,6 +143,76 @@ ssize_t SerialPort::read(uint8_t* buffer, std::size_t max_len)
     return -1;
   }
   return ::read(fd_, buffer, max_len);
+}
+
+ssize_t SerialPort::write(const uint8_t* buffer, std::size_t len)
+{
+  if (fd_ < 0)
+  {
+    errno = EBADF;
+    return -1;
+  }
+
+  std::size_t total_written = 0U;
+  while (total_written < len)
+  {
+    const ssize_t rc = ::write(fd_, buffer + total_written, len - total_written);
+    if (rc > 0)
+    {
+      total_written += static_cast<std::size_t>(rc);
+      continue;
+    }
+
+    if (rc < 0 && errno == EINTR)
+    {
+      continue;
+    }
+
+    if (rc < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+    {
+      if (!wait_writable(100))
+      {
+        errno = EAGAIN;
+        return -1;
+      }
+      continue;
+    }
+
+    return -1;
+  }
+
+  return static_cast<ssize_t>(total_written);
+}
+
+bool SerialPort::wait_writable(int timeout_ms) const
+{
+  if (fd_ < 0)
+  {
+    errno = EBADF;
+    return false;
+  }
+
+  struct pollfd poll_fd{};
+  poll_fd.fd = fd_;
+  poll_fd.events = POLLOUT;
+
+  while (true)
+  {
+    const int rc = ::poll(&poll_fd, 1, timeout_ms);
+    if (rc > 0)
+    {
+      return (poll_fd.revents & POLLOUT) != 0;
+    }
+    if (rc == 0)
+    {
+      return false;
+    }
+    if (errno == EINTR)
+    {
+      continue;
+    }
+    return false;
+  }
 }
 
 int SerialPort::to_termios_baud(int baudrate) noexcept

@@ -2,9 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "mowgli_unicore_gnss/serial_port.hpp"
-#include "mowgli_unicore_gnss/um982_parser.hpp"
-
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -18,13 +15,17 @@
 #include <string>
 #include <unordered_map>
 
-#include <compass_interfaces/msg/azimuth.hpp>
-#include <diagnostic_msgs/msg/diagnostic_array.hpp>
-#include <diagnostic_msgs/msg/diagnostic_status.hpp>
-#include <diagnostic_msgs/msg/key_value.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/nav_sat_status.hpp>
+
+#include "mowgli_unicore_gnss/serial_port.hpp"
+#include "mowgli_unicore_gnss/um982_parser.hpp"
+#include <compass_msgs/msg/azimuth.hpp>
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include <diagnostic_msgs/msg/key_value.hpp>
+#include <rtcm_msgs/msg/message.hpp>
 
 namespace mowgli_unicore_gnss
 {
@@ -34,7 +35,7 @@ namespace
 
 using SteadyTime = std::chrono::steady_clock::time_point;
 
-template<typename T>
+template <typename T>
 struct TimedData
 {
   T data;
@@ -91,36 +92,45 @@ std::string heading_source_name(HeadingSource source)
 class Um982Node : public rclcpp::Node
 {
 public:
-  Um982Node()
-  : rclcpp::Node("um982_node")
+  Um982Node() : rclcpp::Node("um982_node")
   {
-    port_ = declare_parameter<std::string>("port", "/dev/ttyUSB0");
+    port_ = declare_parameter<std::string>("port", "/dev/gps");
     baudrate_ = declare_parameter<int>("baudrate", 921600);
-    frame_id_ = declare_parameter<std::string>("frame_id", "gnss");
+    frame_id_ = declare_parameter<std::string>("frame_id", "gps");
     data_timeout_sec_ = declare_parameter<double>("data_timeout_sec", 1.0);
     reconnect_interval_sec_ = declare_parameter<double>("reconnect_interval_sec", 1.0);
     read_poll_hz_ = declare_parameter<double>("read_poll_hz", 200.0);
-    fix_topic_ = declare_parameter<std::string>("fix_topic", "/gnss/fix");
-    heading_topic_ = declare_parameter<std::string>("heading_topic", "/gnss/azimuth");
-    diagnostics_topic_ = declare_parameter<std::string>("diagnostics_topic", "/gnss/diagnostics");
+    fix_topic_ = declare_parameter<std::string>("fix_topic", "/gps/fix");
+    heading_topic_ = declare_parameter<std::string>("heading_topic", "/gps/azimuth");
+    diagnostics_topic_ = declare_parameter<std::string>("diagnostics_topic", "/gps/diagnostics");
+    rtcm_topic_ = declare_parameter<std::string>("rtcm_topic", "/ntrip_client/rtcm");
 
     serial_.configure(port_, baudrate_);
 
-    fix_pub_ = create_publisher<sensor_msgs::msg::NavSatFix>(fix_topic_, rclcpp::QoS(10));
-    heading_pub_ = create_publisher<compass_interfaces::msg::Azimuth>(heading_topic_, rclcpp::QoS(10));
-    diagnostics_pub_ =
-      create_publisher<diagnostic_msgs::msg::DiagnosticArray>(diagnostics_topic_, rclcpp::QoS(10));
+    auto fix_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+    fix_pub_ = create_publisher<sensor_msgs::msg::NavSatFix>(fix_topic_, fix_qos);
+    heading_pub_ = create_publisher<compass_msgs::msg::Azimuth>(heading_topic_, rclcpp::QoS(10));
+    diagnostics_pub_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(diagnostics_topic_,
+                                                                               rclcpp::QoS(10));
+    rtcm_sub_ = create_subscription<rtcm_msgs::msg::Message>(rtcm_topic_,
+                                                             rclcpp::QoS(10),
+                                                             std::bind(&Um982Node::handle_rtcm,
+                                                                       this,
+                                                                       std::placeholders::_1));
 
     const auto poll_period = std::chrono::duration<double>(1.0 / std::max(1.0, read_poll_hz_));
-    poll_timer_ = create_wall_timer(
-      std::chrono::duration_cast<std::chrono::milliseconds>(poll_period),
-      std::bind(&Um982Node::poll_serial, this));
-    diagnostics_timer_ = create_wall_timer(
-      std::chrono::seconds(1), std::bind(&Um982Node::publish_diagnostics, this));
+    poll_timer_ =
+        create_wall_timer(std::chrono::duration_cast<std::chrono::milliseconds>(poll_period),
+                          std::bind(&Um982Node::poll_serial, this));
+    diagnostics_timer_ = create_wall_timer(std::chrono::seconds(1),
+                                           std::bind(&Um982Node::publish_diagnostics, this));
 
     RCLCPP_INFO(get_logger(),
-      "UM982 node configured: port=%s baudrate=%d fix_topic=%s heading_topic=%s",
-      port_.c_str(), baudrate_, fix_topic_.c_str(), heading_topic_.c_str());
+                "UM982 node configured: port=%s baudrate=%d fix_topic=%s heading_topic=%s",
+                port_.c_str(),
+                baudrate_,
+                fix_topic_.c_str(),
+                heading_topic_.c_str());
   }
 
 private:
@@ -138,7 +148,8 @@ private:
       const ssize_t bytes_read = serial_.read(buffer, sizeof(buffer));
       if (bytes_read > 0)
       {
-        rx_buffer_.append(reinterpret_cast<const char*>(buffer), static_cast<std::size_t>(bytes_read));
+        rx_buffer_.append(reinterpret_cast<const char*>(buffer),
+                          static_cast<std::size_t>(bytes_read));
         drain_lines();
         continue;
       }
@@ -153,16 +164,22 @@ private:
         break;
       }
 
-      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
-        "Serial read failed on %s: %s", port_.c_str(), std::strerror(errno));
+      RCLCPP_ERROR_THROTTLE(get_logger(),
+                            *get_clock(),
+                            5000,
+                            "Serial read failed on %s: %s",
+                            port_.c_str(),
+                            std::strerror(errno));
       serial_.close();
       break;
     }
 
     if (rx_buffer_.size() > 8192U)
     {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-        "Dropping oversized UM982 receive buffer");
+      RCLCPP_WARN_THROTTLE(get_logger(),
+                           *get_clock(),
+                           5000,
+                           "Dropping oversized UM982 receive buffer");
       rx_buffer_.clear();
     }
   }
@@ -188,8 +205,12 @@ private:
     }
     else
     {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-        "Unable to open UM982 serial port %s: %s", port_.c_str(), std::strerror(errno));
+      RCLCPP_WARN_THROTTLE(get_logger(),
+                           *get_clock(),
+                           5000,
+                           "Unable to open UM982 serial port %s: %s",
+                           port_.c_str(),
+                           std::strerror(errno));
     }
   }
 
@@ -256,7 +277,8 @@ private:
 
   bool is_fresh(const SteadyTime& stamp) const
   {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - stamp).count() <= data_timeout_sec_;
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - stamp).count() <=
+           data_timeout_sec_;
   }
 
   std::optional<FixData> active_fix() const
@@ -265,7 +287,8 @@ private:
     {
       return latest_pvtslna_fix_->data;
     }
-    if (latest_gga_fix_.has_value() && latest_gga_fix_->data.valid_fix && is_fresh(latest_gga_fix_->received_at))
+    if (latest_gga_fix_.has_value() && latest_gga_fix_->data.valid_fix &&
+        is_fresh(latest_gga_fix_->received_at))
     {
       return latest_gga_fix_->data;
     }
@@ -288,11 +311,10 @@ private:
   sensor_msgs::msg::NavSatStatus build_nav_status(const FixData& fix) const
   {
     sensor_msgs::msg::NavSatStatus status;
-    status.service =
-      sensor_msgs::msg::NavSatStatus::SERVICE_GPS |
-      sensor_msgs::msg::NavSatStatus::SERVICE_GLONASS |
-      sensor_msgs::msg::NavSatStatus::SERVICE_COMPASS |
-      sensor_msgs::msg::NavSatStatus::SERVICE_GALILEO;
+    status.service = sensor_msgs::msg::NavSatStatus::SERVICE_GPS |
+                     sensor_msgs::msg::NavSatStatus::SERVICE_GLONASS |
+                     sensor_msgs::msg::NavSatStatus::SERVICE_COMPASS |
+                     sensor_msgs::msg::NavSatStatus::SERVICE_GALILEO;
 
     int quality = fix.fix_quality;
     if (quality <= 0 && latest_gga_fix_.has_value() && is_fresh(latest_gga_fix_->received_at))
@@ -305,11 +327,14 @@ private:
       case 0:
         status.status = sensor_msgs::msg::NavSatStatus::STATUS_NO_FIX;
         break;
+      case 1:
+        status.status = sensor_msgs::msg::NavSatStatus::STATUS_FIX;
+        break;
       case 2:
+      case 5:
         status.status = sensor_msgs::msg::NavSatStatus::STATUS_SBAS_FIX;
         break;
       case 4:
-      case 5:
         status.status = sensor_msgs::msg::NavSatStatus::STATUS_GBAS_FIX;
         break;
       default:
@@ -358,14 +383,14 @@ private:
       return;
     }
 
-    compass_interfaces::msg::Azimuth msg;
+    compass_msgs::msg::Azimuth msg;
     msg.header.stamp = now();
     msg.header.frame_id = frame_id_;
     msg.azimuth = heading->heading_deg;
     msg.variance = heading->variance_deg2;
-    msg.unit = compass_interfaces::msg::Azimuth::UNIT_DEG;
-    msg.orientation = compass_interfaces::msg::Azimuth::ORIENTATION_NED;
-    msg.reference = compass_interfaces::msg::Azimuth::REFERENCE_GEOGRAPHIC;
+    msg.unit = compass_msgs::msg::Azimuth::UNIT_DEG;
+    msg.orientation = compass_msgs::msg::Azimuth::ORIENTATION_NED;
+    msg.reference = compass_msgs::msg::Azimuth::REFERENCE_GEOGRAPHIC;
     heading_pub_->publish(msg);
   }
 
@@ -403,8 +428,10 @@ private:
     }
 
     status.values.push_back(kv("serial_open", serial_.is_open() ? "true" : "false"));
-    status.values.push_back(kv("fix_source", fix.has_value() ? fix_source_name(fix->source) : "none"));
-    status.values.push_back(kv("heading_source", heading.has_value() ? heading_source_name(heading->source) : "none"));
+    status.values.push_back(
+        kv("fix_source", fix.has_value() ? fix_source_name(fix->source) : "none"));
+    status.values.push_back(
+        kv("heading_source", heading.has_value() ? heading_source_name(heading->source) : "none"));
 
     if (fix.has_value())
     {
@@ -419,17 +446,22 @@ private:
     if (heading.has_value())
     {
       status.values.push_back(kv("heading_deg", to_string_or_nan(heading->heading_deg)));
-      status.values.push_back(kv("pitch_deg",
-        heading->pitch_deg.has_value() ? to_string_or_nan(*heading->pitch_deg) : "n/a"));
-      status.values.push_back(kv("roll_deg",
-        heading->roll_deg.has_value() ? to_string_or_nan(*heading->roll_deg) : "n/a"));
+      status.values.push_back(
+          kv("pitch_deg",
+             heading->pitch_deg.has_value() ? to_string_or_nan(*heading->pitch_deg) : "n/a"));
+      status.values.push_back(
+          kv("roll_deg",
+             heading->roll_deg.has_value() ? to_string_or_nan(*heading->roll_deg) : "n/a"));
     }
 
     if (latest_velocity_.has_value() && is_fresh(latest_velocity_->received_at))
     {
-      status.values.push_back(kv("velocity_east_mps", to_string_or_nan(latest_velocity_->data.east_mps)));
-      status.values.push_back(kv("velocity_north_mps", to_string_or_nan(latest_velocity_->data.north_mps)));
-      status.values.push_back(kv("velocity_up_mps", to_string_or_nan(latest_velocity_->data.up_mps)));
+      status.values.push_back(
+          kv("velocity_east_mps", to_string_or_nan(latest_velocity_->data.east_mps)));
+      status.values.push_back(
+          kv("velocity_north_mps", to_string_or_nan(latest_velocity_->data.north_mps)));
+      status.values.push_back(
+          kv("velocity_up_mps", to_string_or_nan(latest_velocity_->data.up_mps)));
     }
 
     for (const auto& [sentence_type, count] : sentence_counts_)
@@ -437,8 +469,46 @@ private:
       status.values.push_back(kv("count_" + sentence_type, std::to_string(count)));
     }
 
+    status.values.push_back(kv("rtcm_messages", std::to_string(rtcm_message_count_)));
+    status.values.push_back(kv("rtcm_bytes", std::to_string(rtcm_byte_count_)));
+
     array.status.push_back(status);
     diagnostics_pub_->publish(array);
+  }
+
+  void handle_rtcm(const rtcm_msgs::msg::Message::SharedPtr msg)
+  {
+    ensure_serial_open();
+    if (!serial_.is_open())
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(),
+                           *get_clock(),
+                           5000,
+                           "Dropping RTCM message because serial port %s is not open",
+                           port_.c_str());
+      return;
+    }
+
+    if (msg->message.empty())
+    {
+      return;
+    }
+
+    const auto written = serial_.write(msg->message.data(), msg->message.size());
+    if (written < 0)
+    {
+      RCLCPP_ERROR_THROTTLE(get_logger(),
+                            *get_clock(),
+                            5000,
+                            "Failed to write RTCM message to %s: %s",
+                            port_.c_str(),
+                            std::strerror(errno));
+      serial_.close();
+      return;
+    }
+
+    ++rtcm_message_count_;
+    rtcm_byte_count_ += static_cast<std::size_t>(written);
   }
 
   std::string port_;
@@ -450,6 +520,7 @@ private:
   std::string fix_topic_;
   std::string heading_topic_;
   std::string diagnostics_topic_;
+  std::string rtcm_topic_;
 
   SerialPort serial_;
   Um982Parser parser_;
@@ -463,10 +534,13 @@ private:
   std::optional<TimedData<VelocityData>> latest_velocity_;
 
   std::unordered_map<std::string, std::size_t> sentence_counts_;
+  std::size_t rtcm_message_count_{0U};
+  std::size_t rtcm_byte_count_{0U};
 
   rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr fix_pub_;
-  rclcpp::Publisher<compass_interfaces::msg::Azimuth>::SharedPtr heading_pub_;
+  rclcpp::Publisher<compass_msgs::msg::Azimuth>::SharedPtr heading_pub_;
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
+  rclcpp::Subscription<rtcm_msgs::msg::Message>::SharedPtr rtcm_sub_;
   rclcpp::TimerBase::SharedPtr poll_timer_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
 };
