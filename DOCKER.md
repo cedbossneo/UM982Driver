@@ -8,6 +8,28 @@ This directory contains the ROS 2 C++ driver for Unicore UM982 GNSS receivers pa
 docker build -t mowgli_unicore_gnss:latest .
 ```
 
+### Multi-architecture build
+
+Build both amd64 and arm64 images using Docker Buildx:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t mowgli_unicore_gnss:kilted \
+  --push .
+```
+
+If you want local images for each architecture separately:
+
+```bash
+docker buildx build --platform linux/amd64 -t mowgli_unicore_gnss:amd64 --load .
+```
+
+```bash
+docker buildx build --platform linux/arm64 -t mowgli_unicore_gnss:arm64 --load .
+```
+
+For convenience, use `./build.sh`.
+
 ## Run
 
 Mount the serial device where your UM982 is connected (default `/dev/ttyUSB0`):
