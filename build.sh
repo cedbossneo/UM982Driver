@@ -8,12 +8,12 @@ set -euo pipefail
 TAG="${1:-ghcr.io/mowglifrenchtouch/um982driver:mowgli}"
 PLATFORMS="${2:-linux/amd64,linux/arm64}"
 BUILDER="mowgli-builder"
-CACHE_IMAGE="${TAG}-cache"
+CACHE_IMAGE="${TAG}-mowgli"
 
-echo "📦 TAG        : $TAG"
-echo "🧱 PLATFORMS  : $PLATFORMS"
-echo "⚡ BUILDER    : $BUILDER"
-echo "💾 CACHE IMG  : $CACHE_IMAGE"
+echo "TAG        : $TAG"
+echo "PLATFORMS  : $PLATFORMS"
+echo "BUILDER    : $BUILDER"
+echo "CACHE IMG  : $CACHE_IMAGE"
 
 # -----------------------------------------------------------------------------
 # Create or reuse builder
@@ -39,18 +39,11 @@ docker run --rm --privileged tonistiigi/binfmt --install all >/dev/null 2>&1 || 
 docker buildx build \
   --platform "$PLATFORMS" \
   --tag "$TAG" \
-  \
-  # Enable ccache in build
   --build-arg CCACHE_DIR=/root/.ccache \
-  \
-  # Docker layer cache (registry)
-  --cache-from type=registry,ref="$CACHE_IMAGE" \
-  --cache-to type=registry,ref="$CACHE_IMAGE",mode=max \
-  \
-  # Inline cache (useful for local rebuild)
   --build-arg BUILDKIT_INLINE_CACHE=1 \
-  \
+  --cache-from "type=registry,ref=$CACHE_IMAGE" \
+  --cache-to "type=registry,ref=$CACHE_IMAGE,mode=max" \
   --push \
   .
 
-echo "✅ Build terminé"
+echo "Build terminé"
