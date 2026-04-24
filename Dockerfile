@@ -3,11 +3,11 @@
 # Unicore UM982 GNSS driver (mowgli_unicore_gnss) — ROS 2 C++
 #
 # Publishes:
-#   /gps/fix            sensor_msgs/NavSatFix (NMEA GGA or Unicore PVTSLNA)
-#   /gps/azimuth        compass_msgs/Azimuth (heading from HDT or HPR)
-#   /gps/diagnostics    diagnostic_msgs/DiagnosticArray (status + counters)
+#   /gps/fix            sensor_msgs/NavSatFix
+#   /gps/azimuth        compass_msgs/Azimuth
+#   /gps/diagnostics    diagnostic_msgs/DiagnosticArray
 #
-# Serial device mounted at runtime: /dev/gps (configurable via um982.yaml)
+# Serial device mounted at runtime: /dev/gps
 # =============================================================================
 
 # ─── Builder ────────────────────────────────────────────────────────────────
@@ -15,11 +15,15 @@ FROM ros:kilted-ros-base AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+ENV CCACHE_DIR=/root/.ccache
+ENV PATH="/usr/lib/ccache:${PATH}"
+
 RUN sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
+      ccache \
       build-essential \
       cmake \
       libcurl4-openssl-dev \
@@ -35,6 +39,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ws/src
+
 COPY compass_msgs/package.xml compass_msgs/package.xml
 COPY compass_msgs/CMakeLists.txt compass_msgs/CMakeLists.txt
 COPY compass_msgs/msg/Azimuth.msg compass_msgs/msg/Azimuth.msg
@@ -53,12 +58,17 @@ COPY config/ mowgli_unicore_gnss/config/
 COPY test/ mowgli_unicore_gnss/test/
 
 WORKDIR /ws
-RUN . /opt/ros/kilted/setup.sh \
+
+RUN --mount=type=cache,target=/root/.ccache,sharing=locked \
+    . /opt/ros/kilted/setup.sh \
  && colcon build --merge-install \
       --base-paths src/compass_msgs src/ntrip_client_node src/mowgli_unicore_gnss \
       --packages-up-to ntrip_client_node mowgli_unicore_gnss \
-      --cmake-args -DCMAKE_BUILD_TYPE=Release \
-                   -Wno-dev \
+      --cmake-args \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+        -Wno-dev \
  && rm -rf /ws/build /ws/log /ws/src
 
 # ─── Runtime ────────────────────────────────────────────────────────────────
@@ -87,6 +97,7 @@ COPY --from=builder /ws/install /ws/install
 
 COPY ros2_entrypoint.sh /ros2_entrypoint.sh
 COPY start_gps.sh /start_gps.sh
+
 RUN chmod +x /ros2_entrypoint.sh /start_gps.sh
 
 ENTRYPOINT ["/ros2_entrypoint.sh"]
