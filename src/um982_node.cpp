@@ -273,6 +273,16 @@ private:
     {
       latest_velocity_ = TimedData<VelocityData>{*parsed->velocity, received_at};
     }
+
+    if (parsed->gsv.has_value())
+    {
+      // Per-constellation satellite-in-view tally. Talker prefix
+      // ("GP", "GL", "GA", "GB", "GQ", "GI", "GN") is the constellation
+      // key. We overwrite — total_in_view is identical across every
+      // fragment of a GSV burst, so the latest write is authoritative.
+      gsv_counts_[parsed->gsv->talker] =
+          TimedData<int>{parsed->gsv->satellites_in_view, received_at};
+    }
   }
 
   bool is_fresh(const SteadyTime& stamp) const
@@ -469,6 +479,21 @@ private:
       status.values.push_back(kv("count_" + sentence_type, std::to_string(count)));
     }
 
+    // Per-constellation satellites-in-view (parity with the ublox
+    // /gps/diagnostics surface). Stale entries fall back to "0" so the
+    // GUI shows the constellation as offline rather than a frozen value.
+    int sats_total = 0;
+    for (const auto& [talker, timed] : gsv_counts_)
+    {
+      const int v = is_fresh(timed.received_at) ? timed.data : 0;
+      status.values.push_back(kv("sats_" + talker, std::to_string(v)));
+      sats_total += v;
+    }
+    if (!gsv_counts_.empty())
+    {
+      status.values.push_back(kv("sats_total", std::to_string(sats_total)));
+    }
+
     status.values.push_back(kv("rtcm_messages", std::to_string(rtcm_message_count_)));
     status.values.push_back(kv("rtcm_bytes", std::to_string(rtcm_byte_count_)));
 
@@ -534,6 +559,7 @@ private:
   std::optional<TimedData<VelocityData>> latest_velocity_;
 
   std::unordered_map<std::string, std::size_t> sentence_counts_;
+  std::unordered_map<std::string, TimedData<int>> gsv_counts_;
   std::size_t rtcm_message_count_{0U};
   std::size_t rtcm_byte_count_{0U};
 
