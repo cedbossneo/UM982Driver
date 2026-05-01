@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -404,100 +405,173 @@ private:
     heading_pub_->publish(msg);
   }
 
+  // Build the "GPS: fix" DiagnosticStatus matching the GUI conventions
+  // (gpsHealth["GPS: fix"] in DiagnosticsPage.tsx). Carrier-solution
+  // label (none/float/fixed) is unambiguous — unlike the raw NMEA
+  // GGA quality field, where 4=Fixed and 5=Float (a common confusion).
+  diagnostic_msgs::msg::DiagnosticStatus gps_fix_status(const std::optional<FixData>& fix) const
+  {
+    diagnostic_msgs::msg::DiagnosticStatus s;
+    s.name = "GPS: fix";
+    s.hardware_id = "unicore_um982";
+
+    const int q = fix.has_value() ? fix->fix_quality : 0;
+    const char* carr_soln = "none";
+    const char* fix_type = "no-fix";
+    if (q == 4) { carr_soln = "fixed"; fix_type = "3D-RTK-Fixed"; }
+    else if (q == 5) { carr_soln = "float"; fix_type = "3D-RTK-Float"; }
+    else if (q == 2 || q == 9) { fix_type = "3D-DGPS"; }
+    else if (q == 1) { fix_type = "3D"; }
+
+    double sigma_xy_mm = -1.0;
+    if (fix.has_value() && fix->has_covariance)
+    {
+      const double cxx = fix->covariance[0];
+      const double cyy = fix->covariance[4];
+      sigma_xy_mm = std::sqrt(std::max(0.0, cxx + cyy)) * 1000.0;
+    }
+
+    s.values.push_back(kv("carr_soln", carr_soln));
+    s.values.push_back(kv("fix_type", fix_type));
+    s.values.push_back(kv("gps_fix_ok", q > 0 ? "True" : "False"));
+    s.values.push_back(kv("diff_corr", q >= 2 ? "True" : "False"));
+    s.values.push_back(kv("fix_quality", std::to_string(q)));
+    s.values.push_back(kv("sigma_xy_mm",
+                          sigma_xy_mm >= 0.0 ? to_string_or_nan(sigma_xy_mm) : "n/a"));
+    if (fix.has_value())
+    {
+      s.values.push_back(kv("latitude_deg", to_string_or_nan(fix->latitude_deg)));
+      s.values.push_back(kv("longitude_deg", to_string_or_nan(fix->longitude_deg)));
+      s.values.push_back(kv("altitude_m", to_string_or_nan(fix->altitude_m)));
+      s.values.push_back(kv("fix_source", fix_source_name(fix->source)));
+    }
+
+    if (!serial_.is_open())
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      s.message = "serial disconnected";
+    }
+    else if (!fix.has_value() || q <= 0)
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      s.message = "no fix";
+    }
+    else if (q == 4)
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+      s.message = "RTK Fixed";
+    }
+    else if (q == 5)
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      s.message = "RTK Float — converging, not yet validated";
+    }
+    else
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      s.message = std::string(fix_type) + " fix, no RTK";
+    }
+    return s;
+  }
+
+  diagnostic_msgs::msg::DiagnosticStatus gps_satellites_status() const
+  {
+    diagnostic_msgs::msg::DiagnosticStatus s;
+    s.name = "GPS: satellites";
+    s.hardware_id = "unicore_um982";
+
+    int total = 0;
+    std::string per_const;
+    static const std::unordered_map<std::string, std::string> kTalkerNames = {
+        {"GP", "GPS"}, {"GL", "GLO"}, {"GA", "GAL"}, {"GB", "BDS"},
+        {"GQ", "QZSS"}, {"GI", "NavIC"}, {"GN", "GNSS"}};
+    for (const auto& [talker, timed] : gsv_counts_)
+    {
+      const int v = is_fresh(timed.received_at) ? timed.data : 0;
+      total += v;
+      const auto it = kTalkerNames.find(talker);
+      const std::string label = it != kTalkerNames.end() ? it->second : talker;
+      if (!per_const.empty()) per_const += ", ";
+      per_const += label + "=" + std::to_string(v);
+      s.values.push_back(kv("sats_" + talker, std::to_string(v)));
+    }
+    s.values.push_back(kv("visible", std::to_string(total)));
+    s.values.push_back(kv("used", std::to_string(total)));
+    s.values.push_back(kv("constellations_used", per_const));
+    s.values.push_back(kv("mean_cno_db_hz", "n/a"));   // UM982 doesn't expose per-sat CN0
+    s.values.push_back(kv("cno_ge_40_count", "n/a"));
+
+    if (gsv_counts_.empty() || total == 0)
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      s.message = "no satellites — receiver dead or GSV not enabled";
+    }
+    else if (total < 6)
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      s.message = std::to_string(total) + " sats — weak for RTK";
+    }
+    else
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+      s.message = std::to_string(total) + " sats (" + per_const + ")";
+    }
+    return s;
+  }
+
+  diagnostic_msgs::msg::DiagnosticStatus gps_ntrip_status()
+  {
+    diagnostic_msgs::msg::DiagnosticStatus s;
+    s.name = "GPS: NTRIP/RTCM";
+    s.hardware_id = "ntrip_client";
+
+    constexpr double window_s = 5.0;
+    const auto now_t = std::chrono::steady_clock::now();
+    while (!rtcm_history_.empty() &&
+           std::chrono::duration<double>(now_t - rtcm_history_.front()).count() > window_s)
+    {
+      rtcm_history_.pop_front();
+    }
+    const std::size_t n = rtcm_history_.size();
+    const double rate = static_cast<double>(n) / window_s;
+    const double age =
+        rtcm_history_.empty()
+            ? std::numeric_limits<double>::infinity()
+            : std::chrono::duration<double>(now_t - rtcm_history_.back()).count();
+
+    s.values.push_back(kv("msgs_per_sec", to_string_or_nan(rate)));
+    s.values.push_back(
+        kv("age_of_last_corr_s", std::isfinite(age) ? to_string_or_nan(age) : "inf"));
+    s.values.push_back(kv("rtcm_messages_total", std::to_string(rtcm_message_count_)));
+    s.values.push_back(kv("rtcm_bytes_total", std::to_string(rtcm_byte_count_)));
+
+    if (rtcm_history_.empty())
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+      s.message = "no RTCM in last 5 s";
+    }
+    else if (age > 2.0)
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+      s.message = "RTCM stalling (age " + to_string_or_nan(age) + " s)";
+    }
+    else
+    {
+      s.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+      s.message = to_string_or_nan(rate) + " msg/s, last " + to_string_or_nan(age) + " s ago";
+    }
+    return s;
+  }
+
   void publish_diagnostics()
   {
     diagnostic_msgs::msg::DiagnosticArray array;
     array.header.stamp = now();
 
-    diagnostic_msgs::msg::DiagnosticStatus status;
-    status.name = "um982";
-    status.hardware_id = port_;
-
     const auto fix = active_fix();
-    const auto heading = active_heading();
-
-    if (!serial_.is_open())
-    {
-      status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
-      status.message = "serial disconnected";
-    }
-    else if (!fix.has_value())
-    {
-      status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
-      status.message = "waiting for valid GNSS fix";
-    }
-    else if (!heading.has_value())
-    {
-      status.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
-      status.message = "fix available, heading not yet available";
-    }
-    else
-    {
-      status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
-      status.message = "receiving UM982 data";
-    }
-
-    status.values.push_back(kv("serial_open", serial_.is_open() ? "true" : "false"));
-    status.values.push_back(
-        kv("fix_source", fix.has_value() ? fix_source_name(fix->source) : "none"));
-    status.values.push_back(
-        kv("heading_source", heading.has_value() ? heading_source_name(heading->source) : "none"));
-
-    if (fix.has_value())
-    {
-      status.values.push_back(kv("latitude_deg", to_string_or_nan(fix->latitude_deg)));
-      status.values.push_back(kv("longitude_deg", to_string_or_nan(fix->longitude_deg)));
-      status.values.push_back(kv("altitude_m", to_string_or_nan(fix->altitude_m)));
-      status.values.push_back(kv("fix_quality", std::to_string(fix->fix_quality)));
-      status.values.push_back(kv("satellites", std::to_string(fix->satellites)));
-      status.values.push_back(kv("hdop", to_string_or_nan(fix->hdop)));
-    }
-
-    if (heading.has_value())
-    {
-      status.values.push_back(kv("heading_deg", to_string_or_nan(heading->heading_deg)));
-      status.values.push_back(
-          kv("pitch_deg",
-             heading->pitch_deg.has_value() ? to_string_or_nan(*heading->pitch_deg) : "n/a"));
-      status.values.push_back(
-          kv("roll_deg",
-             heading->roll_deg.has_value() ? to_string_or_nan(*heading->roll_deg) : "n/a"));
-    }
-
-    if (latest_velocity_.has_value() && is_fresh(latest_velocity_->received_at))
-    {
-      status.values.push_back(
-          kv("velocity_east_mps", to_string_or_nan(latest_velocity_->data.east_mps)));
-      status.values.push_back(
-          kv("velocity_north_mps", to_string_or_nan(latest_velocity_->data.north_mps)));
-      status.values.push_back(
-          kv("velocity_up_mps", to_string_or_nan(latest_velocity_->data.up_mps)));
-    }
-
-    for (const auto& [sentence_type, count] : sentence_counts_)
-    {
-      status.values.push_back(kv("count_" + sentence_type, std::to_string(count)));
-    }
-
-    // Per-constellation satellites-in-view (parity with the ublox
-    // /gps/diagnostics surface). Stale entries fall back to "0" so the
-    // GUI shows the constellation as offline rather than a frozen value.
-    int sats_total = 0;
-    for (const auto& [talker, timed] : gsv_counts_)
-    {
-      const int v = is_fresh(timed.received_at) ? timed.data : 0;
-      status.values.push_back(kv("sats_" + talker, std::to_string(v)));
-      sats_total += v;
-    }
-    if (!gsv_counts_.empty())
-    {
-      status.values.push_back(kv("sats_total", std::to_string(sats_total)));
-    }
-
-    status.values.push_back(kv("rtcm_messages", std::to_string(rtcm_message_count_)));
-    status.values.push_back(kv("rtcm_bytes", std::to_string(rtcm_byte_count_)));
-
-    array.status.push_back(status);
+    array.status.push_back(gps_fix_status(fix));
+    array.status.push_back(gps_satellites_status());
+    array.status.push_back(gps_ntrip_status());
     diagnostics_pub_->publish(array);
   }
 
@@ -534,6 +608,11 @@ private:
 
     ++rtcm_message_count_;
     rtcm_byte_count_ += static_cast<std::size_t>(written);
+    rtcm_history_.push_back(std::chrono::steady_clock::now());
+    if (rtcm_history_.size() > 1024U)
+    {
+      rtcm_history_.pop_front();   // bound memory under sustained 100+ Hz RTCM
+    }
   }
 
   std::string port_;
@@ -562,6 +641,10 @@ private:
   std::unordered_map<std::string, TimedData<int>> gsv_counts_;
   std::size_t rtcm_message_count_{0U};
   std::size_t rtcm_byte_count_{0U};
+  // Sliding window of recent RTCM injection timestamps for the
+  // GPS: NTRIP/RTCM diagnostic. Bounded to ~1024 entries so a
+  // chatty caster can't unbounded-grow the deque.
+  std::deque<std::chrono::steady_clock::time_point> rtcm_history_;
 
   rclcpp::Publisher<sensor_msgs::msg::NavSatFix>::SharedPtr fix_pub_;
   rclcpp::Publisher<compass_msgs::msg::Azimuth>::SharedPtr heading_pub_;
