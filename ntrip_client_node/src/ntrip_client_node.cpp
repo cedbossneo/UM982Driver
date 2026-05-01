@@ -149,6 +149,18 @@ public:
       fix_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
           gga_fix_topic_, rclcpp::SensorDataQoS(),
           std::bind(&NTRIPClientNode::on_fix, this, std::placeholders::_1));
+      // Refresh the connection every 5 min so VRS / NEAR mountpoints
+      // re-pick the closest base after the rover has moved. For static
+      // installs this just keeps the connection alive — cheap.
+      gga_refresh_timer_ = create_wall_timer(
+          std::chrono::minutes(5),
+          [this]() {
+            std::lock_guard<std::mutex> lock(gga_mutex_);
+            if (!latest_gga_.empty())
+            {
+              reconfigure_needed_.store(true);
+            }
+          });
       RCLCPP_INFO(get_logger(),
                   "GGA forwarding enabled — subscribing to %s",
                   gga_fix_topic_.c_str());
@@ -215,8 +227,23 @@ public:
     {
       return;
     }
-    std::lock_guard<std::mutex> lock(gga_mutex_);
-    latest_gga_ = gga;
+    bool first_fix = false;
+    {
+      std::lock_guard<std::mutex> lock(gga_mutex_);
+      first_fix = latest_gga_.empty();
+      latest_gga_ = gga;
+    }
+    if (first_fix)
+    {
+      // The connection opened in the constructor with an empty GGA
+      // (no fix yet at startup), so VRS / NEAR mountpoints couldn't
+      // pick a base. Trigger reconfigure so the next streaming cycle
+      // re-runs apply_curl_options() with the freshly populated
+      // Ntrip-GGA header.
+      RCLCPP_INFO(get_logger(),
+                  "First GGA available — forcing NTRIP reconnect to send Ntrip-GGA header");
+      reconfigure_needed_.store(true);
+    }
   }
 
 private:
@@ -447,6 +474,7 @@ private:
   // GGA forwarding for VRS / NEAR mountpoints.
   std::string gga_fix_topic_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr fix_sub_;
+  rclcpp::TimerBase::SharedPtr gga_refresh_timer_;
   std::mutex gga_mutex_;
   std::string latest_gga_;            // protected by gga_mutex_
   curl_slist *gga_header_list_{nullptr};
