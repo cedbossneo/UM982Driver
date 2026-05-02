@@ -89,15 +89,17 @@ TEST(Um982Parser, ParsesHprHeading)
 
 TEST(Um982Parser, ParsesPvtslnaFixWithRtkFixed)
 {
-  // Field index 8 (data field 1 after a 7-field Unicore header — see
-  // kPvtslnaPositionTypeIndex) carries the BESTPOSA-style position-type.
-  // "NARROW_INT" maps to GGA quality 4 (RTK Fixed). Indices in the
-  // sentence below: 0=PVTSLNA, 1-6=header placeholders, 7=sol_status,
-  // 8=pos_type, 9=data[2], 10=altitude, 11=lat, 12=lon, 13-15=stddevs.
+  // Real UM982 PVTSLNA layout: 10-token header followed by `;`, then
+  // data starts. A `,`-only split surfaces the position-type as the
+  // suffix of field 9 (`"<rx_sw>;<position_type>"`). parse_pvtslna
+  // peels the prefix off via find(';').
+  // Indices: 0=PVTSLNA, 1=port, 2=time_sys, 3=time_status, 4=gnss_week,
+  // 5=gnss_seconds, 6-7=status, 8=leap_sec, 9=`<rx_sw>;<pos_type>`,
+  // 10=altitude, 11=lat, 12=lon, 13-15=stddevs.
   Um982Parser parser;
   const auto parsed = parser.parse_line(make_unicore(
-      "PVTSLNA,foo,bar,baz,0,0,0,SOL_COMPUTED,NARROW_INT,0,101.25,48.12345678901,"
-      "2.34567890123,0.30,0.10,0.20"));
+      "PVTSLNA,78,GPS,FINE,2416,519196000,0,0,18,20;NARROW_INT,"
+      "101.25,48.12345678901,2.34567890123,0.30,0.10,0.20"));
 
   ASSERT_TRUE(parsed.has_value());
   ASSERT_TRUE(parsed->fix.has_value());
@@ -117,7 +119,8 @@ TEST(Um982Parser, ParsesPvtslnaFloatRtk)
 {
   Um982Parser parser;
   const auto parsed = parser.parse_line(make_unicore(
-      "PVTSLNA,foo,bar,baz,0,0,0,SOL_COMPUTED,NARROW_FLOAT,0,101.25,48.0,2.0,0.3,0.1,0.2"));
+      "PVTSLNA,78,GPS,FINE,2416,519196000,0,0,18,20;NARROW_FLOAT,"
+      "101.25,48.0,2.0,0.3,0.1,0.2"));
 
   ASSERT_TRUE(parsed.has_value());
   ASSERT_TRUE(parsed->fix.has_value());
@@ -129,10 +132,11 @@ TEST(Um982Parser, ParsesPvtslnaNumericPositionType)
 {
   // Some firmware variants emit BESTPOSA position-type as numeric code
   // ("50" = NARROW_INT) instead of the string form. Position-type lives
-  // at index 8 (cf. kPvtslnaPositionTypeIndex).
+  // after the `;` in field 9.
   Um982Parser parser;
   const auto parsed = parser.parse_line(make_unicore(
-      "PVTSLNA,foo,bar,baz,0,0,0,0,50,0,101.25,48.0,2.0,0.3,0.1,0.2"));
+      "PVTSLNA,78,GPS,FINE,2416,519196000,0,0,18,20;50,"
+      "101.25,48.0,2.0,0.3,0.1,0.2"));
 
   ASSERT_TRUE(parsed.has_value());
   ASSERT_TRUE(parsed->fix.has_value());
@@ -144,7 +148,8 @@ TEST(Um982Parser, ParsesPvtslnaNoFixWhenPositionTypeNone)
 {
   Um982Parser parser;
   const auto parsed = parser.parse_line(make_unicore(
-      "PVTSLNA,foo,bar,baz,0,0,0,0,NONE,0,101.25,48.0,2.0,0.3,0.1,0.2"));
+      "PVTSLNA,78,GPS,FINE,2416,519196000,0,0,18,20;NONE,"
+      "101.25,48.0,2.0,0.3,0.1,0.2"));
 
   ASSERT_TRUE(parsed.has_value());
   ASSERT_TRUE(parsed->fix.has_value());

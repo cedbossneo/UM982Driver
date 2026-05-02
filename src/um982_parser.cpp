@@ -24,13 +24,25 @@ constexpr std::size_t kPvtslnaLongitudeIndex = 12;
 constexpr std::size_t kPvtslnaAltitudeStdIndex = 13;
 constexpr std::size_t kPvtslnaLatitudeStdIndex = 14;
 constexpr std::size_t kPvtslnaLongitudeStdIndex = 15;
-// PVTSLNA layout (cross-checked with sunshineharry/UM982Driver and
-// lostDeers/UM982Driver-ros2): 7-field Unicore header (msg_id,
-// port, sequence, idle_time, time_status, gnss_week, gnss_seconds),
-// then data starts at index 7. Data field 1 (overall index 8) is the
-// BESTPOSA-style position-type — string ("NARROW_INT") or numeric
-// code ("50"). See position_type_to_gga_quality().
-constexpr std::size_t kPvtslnaPositionTypeIndex = 8;
+// PVTSLNA layout — empirically verified against UM982 firmware
+// (real sample: `#PVTSLNA,78,GPS,FINE,2416,519196000,0,0,18,20;NARROW_FLOAT,
+// 197.2120,43.59,0.90,0.2666,0.1021,0.2038,...`).
+//
+// Header is 10 comma-separated tokens (PVTSLNA, port, time_sys,
+// time_status, gnss_week, gnss_seconds, status_a, status_b, leap_sec,
+// rx_sw_version) terminated by `;`. The first data token (position-type,
+// e.g. NARROW_INT / NARROW_FLOAT / PSRDIFF / NONE) is glued to the last
+// header token via `;` — so a `,`-only split surfaces it as
+// `"<rx_sw_version>;<position_type>"` at index 9. parse_pvtslna() peels
+// the prefix off via find(';').
+//
+// After the position-type token, data continues: altitude (idx 10),
+// latitude (11), longitude (12), height_std/lat_std/lon_std (13-15).
+// The 7-field-header constant we used previously came from older
+// Python references (sunshineharry/UM982Driver, lostDeers/UM982Driver-
+// ros2) that omitted the same prefix and matched a different firmware
+// revision. The data-field offsets (altitude at +3 etc.) are stable.
+constexpr std::size_t kPvtslnaPositionTypeIndex = 9;
 
 uint32_t crc32_unicore(std::string_view text)
 {
@@ -390,12 +402,20 @@ std::optional<ParsedSentence> Um982Parser::parse_pvtslna(
   }
 
   // Map the position-type field (string or numeric) to an NMEA GGA
-  // quality code. We always have at least field 8 (>= kPvtslnaLongitudeStdIndex
-  // ensured kPvtslnaLongitudeStdIndex == 15 fields above). Quality 0
-  // means "no fix" — accept the position anyway because the receiver may
-  // still emit covariance on the PVTSLNA stream during cold-start, and
-  // downstream consumers gate on NavSatStatus.status not on valid_fix.
-  const int quality = position_type_to_gga_quality(fields[kPvtslnaPositionTypeIndex]);
+  // quality code. The Unicore header/data separator `;` glues the last
+  // header token to the first data token in a `,`-only split — so peel
+  // the prefix off if present (real-world: `"20;NARROW_FLOAT"` → `"NARROW_FLOAT"`).
+  // Quality 0 means "no fix" — accept the position anyway because the
+  // receiver may still emit covariance on the PVTSLNA stream during
+  // cold-start, and downstream consumers gate on NavSatStatus.status
+  // not on valid_fix.
+  std::string_view pos_type_field = fields[kPvtslnaPositionTypeIndex];
+  const std::size_t semi = pos_type_field.find(';');
+  if (semi != std::string_view::npos)
+  {
+    pos_type_field = pos_type_field.substr(semi + 1U);
+  }
+  const int quality = position_type_to_gga_quality(pos_type_field);
 
   ParsedSentence sentence;
   sentence.sentence_type = "PVTSLNA";
